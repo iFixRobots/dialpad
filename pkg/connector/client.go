@@ -31,8 +31,8 @@ func (da *DialpadAPI) Connect(ctx context.Context) {
 		}
 	}
 
-	// Dialpad Bearer tokens have a 30-day TTL. For logins missing the
-	// captured expiry, assume the token was just minted.
+	// Dialpad Bearer tokens have a roughly 30-day TTL. For older logins
+	// missing a captured expiry, assume the token was just minted.
 	if da.meta.ExpiresAt == 0 && da.meta.BearerToken != "" && len(da.meta.Cookies) > 0 {
 		da.meta.ExpiresAt = time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 		if err := da.login.Save(ctx); err != nil {

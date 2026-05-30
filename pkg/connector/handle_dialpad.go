@@ -63,7 +63,6 @@ func (da *DialpadAPI) handleSMSEvent(evt *dialgo.SMSEvent) {
 	da.login.QueueRemoteEvent(msgEvt)
 }
 
-
 // callEventMaxAge prevents bridging stale call events from before the bridge connected.
 const callEventMaxAge = 15 * time.Minute
 
@@ -196,12 +195,7 @@ func (da *DialpadAPI) handleCallEvent(evt *dialgo.CallEvent) {
 	callerNormalized := formatPhoneNumber(callerNumber)
 	portalKey := da.portalKeyForCall(evt, callerNormalized)
 
-	// The sender is ALWAYS the external phone number ghost.
-	// This ensures the room shows the contact's name/avatar, not the bridge bot.
-	// Even for outbound calls, we want the room to be named after the other party.
-	sender := bridgev2.EventSender{
-		Sender: networkid.UserID(callerNormalized),
-	}
+	sender := callEventSender(evt, callerNormalized)
 
 	// Fetch the contact's real display name from the Dialpad API.
 	// The Ably event's contact_name may just be a formatted phone number,
@@ -242,12 +236,20 @@ func (da *DialpadAPI) handleCallEvent(evt *dialgo.CallEvent) {
 	da.login.QueueRemoteEvent(remoteEvt)
 }
 
+func callEventSender(evt *dialgo.CallEvent, externalNumber string) bridgev2.EventSender {
+	if evt.GetDirection() == "outbound" {
+		return bridgev2.EventSender{IsFromMe: true}
+	}
+	return bridgev2.EventSender{Sender: networkid.UserID(externalNumber)}
+}
+
 // handleActiveCallCheck polls /api/activecalls/me and dispatches a CallEvent
 // for each ringing inbound call. This is triggered when a delta event signals
 // that the user's presence changed to "on_call".
 //
 // Flow (reverse-engineered from HAR):
-//   Delta: presence → "on_call"  →  GET /api/activecalls/me  →  CallEvent
+//
+//	Delta: presence → "on_call"  →  GET /api/activecalls/me  →  CallEvent
 //
 // The active calls API returns the full call data including the caller's
 // phone number, contact display name, and contact key — data that is NOT

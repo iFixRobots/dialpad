@@ -17,6 +17,8 @@ var (
 	ErrRefreshNoCookies           = fmt.Errorf("no Google session cookies stored; cannot refresh silently")
 )
 
+const fallbackBearerTTL = 30 * 24 * time.Hour
+
 type RefreshResult struct {
 	BearerToken string
 	ExpiresAt   time.Time
@@ -189,7 +191,7 @@ func (c *Client) followDialpadCallback(ctx context.Context, callbackURL string) 
 
 func (c *Client) extractBearer(ctx context.Context, chain *chainResult) (*RefreshResult, error) {
 	if token := sessionKeyRegex.FindStringSubmatch(chain.body); len(token) == 2 {
-		expiry := time.Now().Add(30 * 24 * time.Hour)
+		expiry := time.Now().Add(fallbackBearerTTL)
 		return &RefreshResult{BearerToken: token[1], ExpiresAt: expiry}, nil
 	}
 

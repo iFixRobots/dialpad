@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
@@ -16,6 +18,7 @@ import (
 
 // Ensure DialpadAPI implements the backfill interface.
 var _ bridgev2.BackfillingNetworkAPI = (*DialpadAPI)(nil)
+var _ bridgev2.BackfillingNetworkAPIWithLimits = (*DialpadAPI)(nil)
 
 // FetchMessages implements bridgev2.BackfillingNetworkAPI.
 // Uses the internal /api/feed/ endpoint to retrieve message history.
@@ -94,21 +97,23 @@ func (da *DialpadAPI) FetchMessages(ctx context.Context, params bridgev2.FetchMe
 		Int("limit", limit).
 		Msg("Fetching message history")
 
-	feedMessages, err := da.client.GetMessageHistory(ctx, meta.ContactKey, primaryTarget, limit)
+	feedMessages, nextCursor, hasMore, err := da.getMessageHistoryPage(ctx, meta.ContactKey, primaryTarget, limit, params)
 	if err != nil {
 		return nil, fmt.Errorf("fetch message history: %w", err)
 	}
 
-	if len(feedMessages) == 0 && fallbackTarget != "" && fallbackTarget != primaryTarget {
+	if len(feedMessages) == 0 && shouldRetryFallbackFeedTarget(params) && fallbackTarget != "" && fallbackTarget != primaryTarget {
 		da.log.Debug().
 			Str("portal_id", portalID).
 			Str("fallback_target", fallbackTarget).
 			Msg("Primary target returned empty, retrying with fallback target")
-		fallbackMessages, ferr := da.client.GetMessageHistory(ctx, meta.ContactKey, fallbackTarget, limit)
+		fallbackMessages, fallbackCursor, fallbackHasMore, ferr := da.getMessageHistoryPage(ctx, meta.ContactKey, fallbackTarget, limit, params)
 		if ferr != nil {
 			da.log.Warn().Err(ferr).Msg("Fallback feed query failed")
 		} else if len(fallbackMessages) > 0 {
 			feedMessages = fallbackMessages
+			nextCursor = fallbackCursor
+			hasMore = fallbackHasMore
 			meta.TargetKey = fallbackTarget
 			if saveErr := params.Portal.Save(ctx); saveErr != nil {
 				da.log.Warn().Err(saveErr).Msg("Failed to persist corrected target_key")
@@ -137,9 +142,193 @@ func (da *DialpadAPI) FetchMessages(ctx context.Context, params bridgev2.FetchMe
 
 	return &bridgev2.FetchMessagesResponse{
 		Messages: messages,
-		HasMore:  len(feedMessages) >= limit,
+		Cursor:   nextCursor,
+		HasMore:  hasMore,
+		Forward:  params.Forward,
 		MarkRead: true, // SMS backfill is historical — don't generate unread notifications
 	}, nil
+}
+
+// GetBackfillMaxBatchCount maps the bridgev2 queue overrides in config.yaml to
+// Dialpad portal types. Without this hook, bridgev2 only sees the global
+// max_batches value and ignores the dm/group_dm overrides.
+func (da *DialpadAPI) GetBackfillMaxBatchCount(_ context.Context, portal *bridgev2.Portal, _ *database.BackfillTask) int {
+	if IsGroupPortalID(portal.ID) {
+		return da.connector.br.Config.Backfill.Queue.GetOverride("group_dm")
+	}
+	return da.connector.br.Config.Backfill.Queue.GetOverride("dm")
+}
+
+func (da *DialpadAPI) getMessageHistoryPage(
+	ctx context.Context,
+	contactKey string,
+	targetKey string,
+	limit int,
+	params bridgev2.FetchMessagesParams,
+) ([]dialgo.FeedMessage, networkid.PaginationCursor, bool, error) {
+	if params.Forward || params.Cursor != "" || params.AnchorMessage == nil {
+		page, err := da.client.GetMessageHistoryPage(ctx, contactKey, targetKey, limit, string(params.Cursor))
+		if err != nil {
+			return nil, "", false, err
+		}
+		if params.Forward && params.AnchorMessage != nil {
+			page.Messages = feedMessagesAfterAnchor(page.Messages, params.AnchorMessage)
+			if len(page.Messages) == 0 {
+				return nil, "", false, nil
+			}
+		} else if params.AnchorMessage != nil {
+			page.Messages = feedMessagesBeforeAnchor(page.Messages, params.AnchorMessage)
+			if len(page.Messages) == 0 {
+				return nil, "", false, nil
+			}
+		}
+		messages, cursor, hasMore := da.feedHistoryPageResult(page, string(params.Cursor))
+		return messages, cursor, hasMore, nil
+	}
+	return da.getMessageHistoryPageBeforeAnchor(ctx, contactKey, targetKey, limit, params.AnchorMessage)
+}
+
+func (da *DialpadAPI) getMessageHistoryPageBeforeAnchor(
+	ctx context.Context,
+	contactKey string,
+	targetKey string,
+	limit int,
+	anchor *database.Message,
+) ([]dialgo.FeedMessage, networkid.PaginationCursor, bool, error) {
+	cursor := ""
+	seenCursors := map[string]bool{}
+	for {
+		page, err := da.client.GetMessageHistoryPage(ctx, contactKey, targetKey, limit, cursor)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if len(page.Messages) == 0 {
+			return nil, "", false, nil
+		}
+		for i := range page.Messages {
+			if !feedMessageMatchesAnchor(&page.Messages[i], anchor.ID) {
+				continue
+			}
+			olderMessages := feedMessagesBeforeAnchor(page.Messages[i+1:], anchor)
+			if len(olderMessages) > 0 {
+				messages, nextCursor, hasMore := da.feedHistoryPageResult(&dialgo.FeedMessagePage{
+					Messages: olderMessages,
+					Cursor:   page.Cursor,
+				}, cursor)
+				return messages, nextCursor, hasMore, nil
+			}
+			if page.Cursor == "" {
+				return nil, "", false, nil
+			}
+			nextPage, err := da.client.GetMessageHistoryPage(ctx, contactKey, targetKey, limit, page.Cursor)
+			if err != nil {
+				return nil, "", false, err
+			}
+			nextPage.Messages = feedMessagesBeforeAnchor(nextPage.Messages, anchor)
+			if len(nextPage.Messages) == 0 {
+				return nil, "", false, nil
+			}
+			messages, nextCursor, hasMore := da.feedHistoryPageResult(nextPage, page.Cursor)
+			return messages, nextCursor, hasMore, nil
+		}
+		olderMessages := feedMessagesBeforeAnchor(page.Messages, anchor)
+		if len(olderMessages) > 0 {
+			da.log.Debug().
+				Str("anchor_message_id", string(anchor.ID)).
+				Time("anchor_timestamp", anchor.Timestamp).
+				Msg("Could not find anchor message ID in Dialpad feed page, using anchor timestamp cutoff")
+			messages, nextCursor, hasMore := da.feedHistoryPageResult(&dialgo.FeedMessagePage{
+				Messages: olderMessages,
+				Cursor:   page.Cursor,
+			}, cursor)
+			return messages, nextCursor, hasMore, nil
+		}
+		if page.Cursor == "" || seenCursors[page.Cursor] {
+			break
+		}
+		seenCursors[page.Cursor] = true
+		cursor = page.Cursor
+	}
+	da.log.Debug().
+		Str("anchor_message_id", string(anchor.ID)).
+		Time("anchor_timestamp", anchor.Timestamp).
+		Msg("Could not find older Dialpad feed messages before anchor")
+	return nil, "", false, nil
+}
+
+func feedMessageMatchesAnchor(fm *dialgo.FeedMessage, anchorID networkid.MessageID) bool {
+	id := strconv.FormatInt(fm.ID, 10)
+	anchor := string(anchorID)
+	return anchor == id || anchor == "vm-"+id || anchor == "call-"+id || strings.HasPrefix(anchor, "call-"+id+"-")
+}
+
+func shouldRetryFallbackFeedTarget(params bridgev2.FetchMessagesParams) bool {
+	return params.Cursor == "" && params.AnchorMessage == nil
+}
+
+func (da *DialpadAPI) feedHistoryPageResult(page *dialgo.FeedMessagePage, requestCursor string) ([]dialgo.FeedMessage, networkid.PaginationCursor, bool) {
+	if page == nil || len(page.Messages) == 0 || page.Cursor == "" {
+		if page != nil {
+			return page.Messages, "", false
+		}
+		return nil, "", false
+	}
+	if page.Cursor == requestCursor {
+		da.log.Debug().
+			Str("cursor", page.Cursor).
+			Msg("Dialpad feed cursor did not advance, stopping backfill pagination")
+		return page.Messages, "", false
+	}
+	return page.Messages, networkid.PaginationCursor(page.Cursor), true
+}
+
+func feedMessagesBeforeAnchor(messages []dialgo.FeedMessage, anchor *database.Message) []dialgo.FeedMessage {
+	if anchor == nil || anchor.Timestamp.IsZero() {
+		return nil
+	}
+	olderMessages := make([]dialgo.FeedMessage, 0, len(messages))
+	for i := range messages {
+		if feedMessageMatchesAnchor(&messages[i], anchor.ID) {
+			continue
+		}
+		msgTime := feedMessageTimestamp(&messages[i])
+		if !msgTime.IsZero() && msgTime.Before(anchor.Timestamp) {
+			olderMessages = append(olderMessages, messages[i])
+		}
+	}
+	return olderMessages
+}
+
+func feedMessagesAfterAnchor(messages []dialgo.FeedMessage, anchor *database.Message) []dialgo.FeedMessage {
+	if anchor == nil || anchor.Timestamp.IsZero() {
+		return messages
+	}
+	newerMessages := make([]dialgo.FeedMessage, 0, len(messages))
+	for i := range messages {
+		if feedMessageMatchesAnchor(&messages[i], anchor.ID) {
+			continue
+		}
+		msgTime := feedMessageTimestamp(&messages[i])
+		if !msgTime.IsZero() && !msgTime.Before(anchor.Timestamp) {
+			newerMessages = append(newerMessages, messages[i])
+		}
+	}
+	return newerMessages
+}
+
+func feedMessageTimestamp(fm *dialgo.FeedMessage) time.Time {
+	switch {
+	case fm.FeedType == "Call" && fm.DateStarted > 0:
+		return time.UnixMilli(fm.DateStarted)
+	case fm.FeedType == "Call" && fm.FeedDate > 0:
+		return time.UnixMilli(fm.FeedDate)
+	case fm.Date > 0:
+		return time.UnixMilli(fm.Date)
+	case fm.FeedDate > 0:
+		return time.UnixMilli(fm.FeedDate)
+	default:
+		return time.Time{}
+	}
 }
 
 // convertFeedMessage converts a single internal API FeedMessage to a bridgev2.BackfillMessage.

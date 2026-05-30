@@ -45,7 +45,7 @@ var cookieLoginStep = &bridgev2.LoginStep{
 	Type:   bridgev2.LoginStepTypeCookies,
 	StepID: LoginStepIDCookies,
 	Instructions: "Sign in to Dialpad with Google in the embedded browser. The bridge captures both your Dialpad session token and Google session cookies " +
-		"so it can silently refresh the token every ~30 days without bothering you. Make sure to actually click 'Sign in with Google' rather than just pasting a token.",
+		"so it can attempt silent token refreshes later. Make sure to actually click 'Sign in with Google' rather than just pasting a token.",
 	CookiesParams: &bridgev2.LoginCookiesParams{
 		// Skip Dialpad's login chooser (Google / Microsoft / email+password)
 		// and go straight to the Google OAuth flow. The bridge only supports

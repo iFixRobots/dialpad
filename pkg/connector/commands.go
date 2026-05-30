@@ -187,7 +187,7 @@ var cmdRefreshToken = &commands.FullHandler{
 	Name: "refresh-token",
 	Help: commands.HelpMeta{
 		Section:     dialpadHelpSection,
-		Description: "Force a silent token refresh now (debug / dry-run for the 30-day refresh path).",
+		Description: "Force a silent token refresh now.",
 	},
 	RequiresLogin: true,
 }

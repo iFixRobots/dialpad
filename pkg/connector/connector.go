@@ -155,7 +155,7 @@ call_start_notices: true
 func (dc *DialpadConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		Name:        "Sign in with Google",
-		Description: "Sign in via the embedded Google flow. The bridge captures your Dialpad and Google session cookies so it can silently refresh the token every ~30 days.",
+		Description: "Sign in via the embedded Google flow. The bridge captures your Dialpad and Google session cookies so it can attempt silent token refreshes later.",
 		ID:          LoginFlowIDCookies,
 	}}
 }
@@ -192,8 +192,6 @@ func (dc *DialpadConnector) GetBridgeInfoVersion() (info, capabilities int) {
 	// e.g. newly-allowed sticker/file types.
 	return 1, 2
 }
-
-
 
 // formatPhoneNumber normalizes a phone number to E.164 format for use in portal/ghost IDs.
 // Uses Google's libphonenumber for full international support. If parsing fails

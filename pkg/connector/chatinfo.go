@@ -148,11 +148,25 @@ func (da *DialpadAPI) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 // makeAvatar creates a bridgev2.Avatar from a Dialpad image URL.
 // The URL is used as the avatar ID — if it changes, the avatar is re-uploaded.
 func (da *DialpadAPI) makeAvatar(imageURL string) *bridgev2.Avatar {
+	imageURL = absoluteDialpadURL(imageURL)
 	client := da.client
 	return &bridgev2.Avatar{
 		ID: networkid.AvatarID(imageURL),
 		Get: func(ctx context.Context) ([]byte, error) {
 			return client.DownloadMedia(ctx, imageURL)
 		},
+	}
+}
+
+func absoluteDialpadURL(rawURL string) string {
+	switch {
+	case strings.HasPrefix(rawURL, "https://") || strings.HasPrefix(rawURL, "http://"):
+		return rawURL
+	case strings.HasPrefix(rawURL, "//"):
+		return "https:" + rawURL
+	case strings.HasPrefix(rawURL, "/"):
+		return "https://dialpad.com" + rawURL
+	default:
+		return rawURL
 	}
 }

@@ -1,6 +1,6 @@
 # Dialpad for Beeper
 
-A self-hosted connection that brings Dialpad SMS, MMS, calls, and voicemail into Beeper Desktop. Runs against your Beeper account; nothing about your Dialpad activity touches Beeper's servers.
+A self-hosted connection that brings Dialpad SMS, MMS, calls, and voicemail into Beeper Desktop. The bridge runs on your machine and syncs Dialpad conversations into your Beeper account.
 
 ## What works
 
@@ -13,7 +13,7 @@ A self-hosted connection that brings Dialpad SMS, MMS, calls, and voicemail into
 - ✅ Message send failure reporting
 - ✅ Contact list for Beeper's contact picker
 - ✅ Multi-number routing — separate Beeper chat per `(your_line, their_number)` pair on receive and reply
-- ✅ Silent session refresh — your Dialpad session self-renews in the background before its 30-day expiry, no re-login needed
+- ✅ Silent session refresh attempt — the bridge tries to renew your Dialpad session before its roughly 30-day expiry when the captured cookies allow it
 
 ## What doesn't work yet
 
@@ -78,15 +78,15 @@ If you (the AI) are sitting next to a user who wants this running, use the scrip
    > "Open Beeper Desktop. Go to **Settings → Bridges**. (This menu just appeared because the connection is now running on your account — it wasn't there before.) Scroll to the **Self-hosted Bridges** section — you should see `sh-dialpad`. Right-click it and choose **Experimental: Add an account**. A window pops up at the Dialpad login page — click **Sign in with Google** and complete the flow normally. Don't paste anything manually. The window closes and your Dialpad conversations start appearing in Beeper within a few seconds."
 
 7. **Verify after sign-in.** Check `bridge.log` for `Dialpad login successful`. The line should show `has_dialpad_cookie=true` and `has_google_cookies=true`.
-   - If `has_google_cookies=false`: tell the user *"Something went wrong capturing Google cookies — silent refresh won't work, but the connection will function fine for the next 30 days. You can re-do the sign-in later to fix this."*
-   - Otherwise: *"You're set. The connection will silently refresh your Dialpad session every ~30 days without bothering you."*
+   - If `has_google_cookies=false`: tell the user *"Something went wrong capturing Google cookies — silent refresh won't work reliably. You can re-do the sign-in later to fix this."*
+   - Otherwise: *"You're set. The connection will try to refresh your Dialpad session in the background. If Google or Dialpad requires a fresh interactive sign-in, Beeper will ask you to log in again."*
 
 **What the AI should explain about features (in plain English, only if the user asks):**
 - **Texting**: *"Your Dialpad conversations show up in Beeper just like any other chat. Replies go out from your Dialpad number. Pictures work both directions."*
 - **Voicemails**: *"When someone leaves you a voicemail, it shows up in Beeper as a voice note you can play right there."*
 - **Calls**: *"You'll see incoming, outgoing, and missed calls as notices in the chat. The connection doesn't make calls — you still place those in Dialpad itself."*
 - **Multiple Dialpad numbers**: *"Each conversation lives in its own Beeper chat based on which of your numbers the other person texted."*
-- **Re-login**: *"You shouldn't have to sign in every month. The connection refreshes your Dialpad session in the background. You'll only be asked to sign in again if Google specifically requires a fresh security check, which is usually once every few months at most."*
+- **Re-login**: *"The connection tries to refresh your Dialpad session in the background. If Google or Dialpad requires a fresh security check, Beeper will ask you to sign in again."*
 
 **What to say when things break:**
 - *"Sign in failed with 'Couldn't sign you in'"* → restart Beeper Desktop and try again. If it persists, the embedded sign-in window may need a binary refresh — re-download the latest release.
@@ -146,11 +146,11 @@ Reset cleanly with `bbctl delete sh-dialpad` (interactive — needs `y` to confi
 5. Click **"Sign in with Google"** and complete the flow — pick your account, finish 2FA if Google asks for it. Don't paste anything manually.
 6. The window closes and your conversations start syncing within a few seconds.
 
-`bridge.log` should show `Dialpad login successful` with `has_dialpad_cookie=true` and `has_google_cookies=true`. If `has_google_cookies=false`, automatic refresh won't work and you'll need to re-sign in about 30 days from now.
+`bridge.log` should show `Dialpad login successful` with `has_dialpad_cookie=true` and `has_google_cookies=true`. If `has_google_cookies=false`, automatic refresh may not work and you'll need to re-sign in when the Dialpad session expires.
 
 ## Session lifetime & auto-refresh
 
-Dialpad sessions last 30 days. The connection attempts a silent refresh ~5 days before expiry; if Google requires an interactive sign-in (typically once every few months for MFA), you'll see a re-login prompt in Beeper. Re-clicking "Experimental: Add an account" is usually a one-click reauth.
+Dialpad sessions are roughly 30 days, and the bridge stores the expiry when Dialpad provides it. The connection attempts a silent refresh before the stored session expires. If Google or Dialpad requires an interactive sign-in, you'll see a re-login prompt in Beeper. Re-clicking "Experimental: Add an account" is usually a quick reauth.
 
 ## Multi-number behavior
 

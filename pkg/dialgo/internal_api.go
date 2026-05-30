@@ -23,9 +23,9 @@ import (
 // Reverse-engineered from the Dialpad web client HAR capture.
 type FeedMessage struct {
 	ID             int64  `json:"id"`
-	Key            string `json:"key"`       // App Engine Datastore entity key
+	Key            string `json:"key"` // App Engine Datastore entity key
 	ContactKey     string `json:"contact_key"`
-	Date           int64  `json:"date"`           // Unix timestamp in milliseconds
+	Date           int64  `json:"date"`            // Unix timestamp in milliseconds
 	Orientation    string `json:"orientation"`     // "internal" = sent by user, "external" = received
 	DeliveryMethod string `json:"delivery_method"` // "dp" = internal, "sms", "mms"
 	Text           string `json:"text"`
@@ -47,7 +47,7 @@ type FeedMessage struct {
 	Direction         string         `json:"direction"`           // "inbound", "outbound"
 	ExternalEndpoint  string         `json:"external_endpoint"`   // caller/callee E.164 number
 	Duration          int            `json:"duration"`            // total call duration in seconds
-	DurationConnected int            `json:"duration_connected"` // connected duration in seconds
+	DurationConnected int            `json:"duration_connected"`  // connected duration in seconds
 	DateStarted       int64          `json:"date_started"`        // epoch millis
 	DateConnected     int64          `json:"date_connected"`      // epoch millis
 	DateEnded         int64          `json:"date_ended"`          // epoch millis
@@ -86,12 +86,29 @@ type FeedLastMessage struct {
 	FromPhone string `json:"from_phone"`
 }
 
+// FeedMessagePage is one page of the mixed Dialpad conversation feed.
+type FeedMessagePage struct {
+	Messages []FeedMessage
+	Cursor   string
+}
+
 // GetMessageHistory fetches message history for a conversation via the internal API.
 // GET /api/feed/?contact_key=...&target_key=...&limit=N
 //
 // This endpoint is NOT in the public API — it's reverse-engineered from the web client.
 // The target_key is the logged-in user's entity key. The contact_key identifies the conversation.
 func (c *Client) GetMessageHistory(ctx context.Context, contactKey, targetKey string, limit int) ([]FeedMessage, error) {
+	page, err := c.GetMessageHistoryPage(ctx, contactKey, targetKey, limit, "")
+	if err != nil {
+		return nil, err
+	}
+	return page.Messages, nil
+}
+
+// GetMessageHistoryPage fetches one /api/feed/ page and returns Dialpad's cursor
+// response header for older pages. The web UI sends that cursor back as the
+// cursor query parameter when the user scrolls up.
+func (c *Client) GetMessageHistoryPage(ctx context.Context, contactKey, targetKey string, limit int, cursor string) (*FeedMessagePage, error) {
 	if !c.IsLoggedIn() {
 		return nil, ErrNotLoggedIn
 	}
@@ -107,13 +124,15 @@ func (c *Client) GetMessageHistory(ctx context.Context, contactKey, targetKey st
 		"projection":         {"-contact"},
 		"support_link_media": {"true"},
 	}
+	if cursor != "" {
+		params.Set("cursor", cursor)
+	}
 
 	reqURL := c.InternalAPIBaseURL + "/feed/?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
-
 
 	resp, err := c.doAPIRequest(req, http.StatusOK, "get message history")
 	if err != nil {
@@ -138,7 +157,10 @@ func (c *Client) GetMessageHistory(ctx context.Context, contactKey, targetKey st
 		return nil, fmt.Errorf("decode message history (body=%s): %w", string(bodyBytes[:min(len(bodyBytes), 200)]), err)
 	}
 
-	return messages, nil
+	return &FeedMessagePage{
+		Messages: messages,
+		Cursor:   resp.Header.Get("cursor"),
+	}, nil
 }
 
 // GetConversations fetches the conversation list via the internal API.
@@ -162,19 +184,17 @@ func (c *Client) GetConversations(ctx context.Context, targetKey string, limit i
 
 // InternalUser represents the user info returned by the internal /api/user/me endpoint.
 type InternalUser struct {
-	Key         string      `json:"key"`          // UserProfile entity key — used as sender_key on sends and target_key on /api/contact/
-	OfficeKey   string      `json:"office_key"`   // Office entity key — used as target_key/feed_target on /api/feed/ and sends
-	ID          string      `json:"id"`           // User identifier (Datastore key string)
-	UserID      json.Number `json:"user_id"`      // Numeric user ID (used in Ably channels: UserProfile-{user_id}:main)
+	Key         string      `json:"key"`        // UserProfile entity key — used as sender_key on sends and target_key on /api/contact/
+	OfficeKey   string      `json:"office_key"` // Office entity key — used as target_key/feed_target on /api/feed/ and sends
+	ID          string      `json:"id"`         // User identifier (Datastore key string)
+	UserID      json.Number `json:"user_id"`    // Numeric user ID (used in Ably channels: UserProfile-{user_id}:main)
 	DisplayName string      `json:"display_name"`
 	FirstName   string      `json:"first_name"`
 	LastName    string      `json:"last_name"`
 	Email       string      `json:"email,omitempty"`
-	CallerID    string      `json:"caller_id,omitempty"`  // E.164 phone number (e.g., "+14155550100")
-	Phones      []string    `json:"phones,omitempty"`     // List of phone numbers
+	CallerID    string      `json:"caller_id,omitempty"` // E.164 phone number (e.g., "+14155550100")
+	Phones      []string    `json:"phones,omitempty"`    // List of phone numbers
 }
-
-
 
 // OfficeInfo represents an Office entity from GET /api/group/{office_key}.
 // Reverse-engineered from the Dialpad web client; used to discover the office's
@@ -196,17 +216,17 @@ func (c *Client) GetOffice(ctx context.Context, officeKey string) (*OfficeInfo, 
 // ContactInfo represents the contact details returned by GET /api/contact/{key}.
 // Reverse-engineered from the Dialpad web client's contact update flow.
 type ContactInfo struct {
-	ContactID    int64    `json:"contact_id"`
-	ContactKey   string   `json:"contact_key"`
-	DisplayName  string   `json:"display_name"`
-	FirstName    string   `json:"first_name"`
-	LastName     string   `json:"last_name,omitempty"`
-	CompanyName  string   `json:"company_name,omitempty"`
-	DialString   string   `json:"dial_string"`    // E.164 phone (e.g., "+14155550102")
-	Phones       []string `json:"phones"`
-	Emails       []string `json:"emails"`
-	IsExternal   bool     `json:"is_external"`
-	ImageURL     string   `json:"image_url,omitempty"`
+	ContactID   int64    `json:"contact_id"`
+	ContactKey  string   `json:"contact_key"`
+	DisplayName string   `json:"display_name"`
+	FirstName   string   `json:"first_name"`
+	LastName    string   `json:"last_name,omitempty"`
+	CompanyName string   `json:"company_name,omitempty"`
+	DialString  string   `json:"dial_string"` // E.164 phone (e.g., "+14155550102")
+	Phones      []string `json:"phones"`
+	Emails      []string `json:"emails"`
+	IsExternal  bool     `json:"is_external"`
+	ImageURL    string   `json:"image_url,omitempty"`
 }
 
 // GetContact fetches contact details by contact_key via the internal API.
@@ -221,19 +241,19 @@ func (c *Client) GetContact(ctx context.Context, contactKey string) (*ContactInf
 // This is what the web client polls when a delta event signals "on_call".
 type ActiveCall struct {
 	ID                int64              `json:"id"`
-	State             string             `json:"state"`              // "ringing", "connected", "hangup"
-	Direction         string             `json:"direction"`          // "inbound", "outbound"
-	ExternalEndpoint  string             `json:"external_endpoint"`  // Caller's E.164 number
-	InternalEndpoint  string             `json:"internal_endpoint"`  // Dialpad user's number
+	State             string             `json:"state"`             // "ringing", "connected", "hangup"
+	Direction         string             `json:"direction"`         // "inbound", "outbound"
+	ExternalEndpoint  string             `json:"external_endpoint"` // Caller's E.164 number
+	InternalEndpoint  string             `json:"internal_endpoint"` // Dialpad user's number
 	ContactKey        string             `json:"contact_key"`
 	Contact           *ActiveCallContact `json:"contact"`
-	DateFirstRang     int64              `json:"date_first_rang"`    // epoch millis
-	DateStarted       int64              `json:"date_started"`       // epoch millis
-	DateConnected     int64              `json:"date_connected"`     // epoch millis (null if not answered)
-	DateEnded         int64              `json:"date_ended"`         // epoch millis (null if active)
+	DateFirstRang     int64              `json:"date_first_rang"` // epoch millis
+	DateStarted       int64              `json:"date_started"`    // epoch millis
+	DateConnected     int64              `json:"date_connected"`  // epoch millis (null if not answered)
+	DateEnded         int64              `json:"date_ended"`      // epoch millis (null if active)
 	Duration          int                `json:"duration"`
 	DurationConnected int                `json:"duration_connected"`
-	EntryPointDID     string             `json:"entry_point_did"`    // Dialpad line number
+	EntryPointDID     string             `json:"entry_point_did"` // Dialpad line number
 }
 
 // ActiveCallContact is the embedded contact info in an active call response.
@@ -241,8 +261,8 @@ type ActiveCallContact struct {
 	DisplayName  string `json:"display_name"`
 	FirstName    string `json:"first_name"`
 	LastName     string `json:"last_name"`
-	DialString   string `json:"dial_string"`    // E.164
-	ContactKey   string `json:"key"`            // Datastore entity key
+	DialString   string `json:"dial_string"` // E.164
+	ContactKey   string `json:"key"`         // Datastore entity key
 	ImageURL     string `json:"image_url"`
 	IsExternal   bool   `json:"is_external"`
 	PrimaryPhone string `json:"primary_phone"`
@@ -272,9 +292,9 @@ func (c *Client) GetActiveCalls(ctx context.Context) ([]ActiveCall, error) {
 type CallRecording struct {
 	Date              int64  `json:"date"`
 	DateListened      *int64 `json:"date_listened"`
-	Duration          int    `json:"duration"`          // Duration of voicemail in seconds
+	Duration          int    `json:"duration"` // Duration of voicemail in seconds
 	ID                string `json:"id"`
-	RecordingURL      string `json:"recording_url"`     // MP3 download URL (authenticated)
+	RecordingURL      string `json:"recording_url"`      // MP3 download URL (authenticated)
 	TranscriptionText string `json:"transcription_text"` // Auto-transcription of the voicemail
 }
 
